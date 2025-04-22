@@ -15,6 +15,7 @@ This Blender add-on allows you to import camera animations from JSON files gener
 ## Usage
 
 ![A Blender window showing a fully setup flashback camera animation playing](https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExbWEwbWFmdHd3dXoxYjQ3eG9vbWg3MWVvcDE2MWUyYW9ra3B6N3l6cyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/109XkASPUQaLY67uWH/giphy.gif)
+![A Blender window showing a fully setup flashback camera and tracking points playing](https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExbTE0MzBnc24wOWJrZ2c3OXdwZG83MXMzcmE1Y2Fyc25maGt6dGJuMiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/YM1zE7bpAZ5b2MOqAF/giphy.gif)
 
 1.  **Import the Animation:**
     * Go to `File > Import > FlashBlack Camera (.json)`.
