@@ -1,17 +1,18 @@
 bl_info = {
-    "name": "FlashBlack CJ Blender Import",
+    "name": "FlashBlack CJ/ET Blender Import",
     "author": "IAmMaddieFilms",
-    "version": (1, 8, 0),  # Increment version
+    "version": (1, 8, 1),  # Increment version
     "blender": (3, 0, 0),
     "location": "File > Import",
-    "description": "Imports camera animation from FlashBlack CJ JSON files, sets end frame, converts Minecraft coordinates and rotations.",
+    "description": "Imports camera animation and tracking data from FlashBlack CJ/ET JSON files, sets end frame, converts Minecraft coordinates and rotations.",
     "category": "Import-Export",
 }
 
 import bpy
 import json
+import os
 from bpy_extras.io_utils import ImportHelper
-from bpy.props import StringProperty, FloatProperty
+from bpy.props import StringProperty, FloatProperty, EnumProperty
 import math
 
 
@@ -19,7 +20,7 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
     """Import camera animation from a FlashBlack JSON file"""
 
     bl_idname = "import_anim.flashblack_json"
-    bl_label = "Import FlashBlack CJ"
+    bl_label = "Import FlashBlack CJ/ET"
 
     filename_ext = ".json"
 
@@ -29,50 +30,98 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
         maxlen=255,
     )
 
+    import_type: EnumProperty(
+        name="Import",
+        description="Choose what to import from the FlashBlack JSON file.",
+        items=(
+            ('CJ', "CJ Camera", "Import camera animation data."),
+            ('TJ', "TJ Animation", "Import entity animation data."),
+            ('BOTH', "Both", "Import both camera and entity animation data."),
+        ),
+        default='BOTH',
+    )
+
     block_size_multiplier: FloatProperty(
         name="Block Size Multiplier",
         description="Multiplier to scale the camera movement (e.g., 0.1 to reduce scale) // Usually it should stay at 1",
         default=1.0,
         min=0.001,  # Avoid zero or very small values that might cause issues
     )
-    
+
     render_width: FloatProperty(
         name="Render Width",
         description="Width of Video",
         default=1920,
         min=1,
-        max=5000        # Avoid zero or very small values that might cause issues
+        max=5000      # Avoid zero or very small values that might cause issues
     )
-    
+
     render_height: FloatProperty(
         name="Render Height",
         description="Height of Video",
         default=1080,
-        min=1, 
+        min=1,
         max=5000# Avoid zero or very small values that might cause issues
     )
 
     def execute(self, context):
-        try:
-            with open(self.filepath, "r") as f:
-                data = json.load(f)
-            self.import_flashblack_animation(context, data, self.block_size_multiplier,self.render_height,self.render_width)
-            return {"FINISHED"}
-        except FileNotFoundError:
-            self.report({"ERROR"}, f"File not found: {self.filepath}")
+        cj_data = None
+        tj_data = None
+        success = True
+        directory = os.path.dirname(self.filepath)
+        base_name, ext = os.path.splitext(os.path.basename(self.filepath))
+
+        modified_base_name = base_name[:-2] if len(base_name) >= 2 else base_name
+
+        cj_filepath = os.path.join(directory, modified_base_name + "CJ" + ext)
+        tj_filepath = os.path.join(directory, modified_base_name + "ET" + ext)
+
+        if self.import_type == 'CJ' or self.import_type == 'BOTH':
+            try:
+                with open(cj_filepath, "r") as f:
+                    cj_data = json.load(f)
+            except FileNotFoundError:
+                self.report({"ERROR"}, f"CJ JSON File not found: {cj_filepath}")
+                success = False
+            except json.JSONDecodeError:
+                self.report({"ERROR"}, f"Invalid CJ JSON file: {cj_filepath}")
+                success = False
+
+        if self.import_type == 'TJ' or self.import_type == 'BOTH':
+            try:
+                with open(tj_filepath, "r") as f:
+                    tj_data = json.load(f)
+            except FileNotFoundError:
+                self.report({"ERROR"}, f"ET JSON File not found: {tj_filepath}")
+                success = False
+            except json.JSONDecodeError:
+                self.report({"ERROR"}, f"Invalid ET JSON file: {tj_filepath}")
+                success = False
+
+        if not success:
             return {"CANCELLED"}
-        except json.JSONDecodeError:
-            self.report({"ERROR"}, f"Invalid JSON file: {self.filepath}")
+
+        if self.import_type == 'CJ' and cj_data:
+            self.import_flashblack_animation(context, cj_data, self.block_size_multiplier, self.render_height, self.render_width)
+        elif self.import_type == 'TJ' and tj_data:
+            self.import_tracking_animation(context, tj_data, self.block_size_multiplier)
+        elif self.import_type == 'BOTH' and cj_data and tj_data:
+            self.import_flashblack_animation(context, cj_data, self.block_size_multiplier, self.render_height, self.render_width)
+            self.import_tracking_animation(context, tj_data, self.block_size_multiplier)
+        elif self.import_type == 'BOTH' and (not cj_data or not tj_data):
+            self.report({"ERROR"}, "Both CJ and ET JSON files are required for 'Both' import.")
             return {"CANCELLED"}
-        except Exception as e:
-            self.report({"ERROR"}, f"An error occurred: {e}")
-            return {"CANCELLED"}
+
+        return {"FINISHED"}
 
     def draw(self, context):
         layout = self.layout
+        layout.prop(self, "import_type")
         layout.prop(self, "block_size_multiplier")
-        layout.prop(self, "render_height")
-        layout.prop(self, "render_width")
+
+        if self.import_type == 'CJ' or self.import_type == 'BOTH':
+            layout.prop(self, "render_height")
+            layout.prop(self, "render_width")
         
     def calculate_horizontal_fov(ignore, vertical_fov_degrees,aspect_ratio):
         
@@ -203,10 +252,130 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
             self.report({"WARNING"}, f"Error processing keyframe at frame {frame}: {e}")
         except Exception as e:
             self.report({"ERROR"}, f"Error processing keyframe: {e}")
+            
+            
+    def import_tracking_animation(self, context, data, block_size_multiplier):
+        """Imports entity tracking animation data from the parsed JSON."""
+        if 'Entities' not in data:
+            self.report({"ERROR"}, "TJ JSON file does not contain 'Entities' data.")
+            return
+
+        max_frame = 0
+
+        for frame_data in data['Entities']:
+            for entity_name, entity_parts in frame_data.items():
+                if entity_name == 'tick':
+                    continue  # Skip the tick entry here, process later
+
+                tick = frame_data.get('tick', -1)
+                if tick == -1:
+                    self.report({"WARNING"}, f"Frame missing 'tick' information: {frame_data}")
+                    continue
+
+                frame_number = int(tick) + 1
+
+                parent_empty_name = f"{entity_name}_Animation"
+                parent_empty = bpy.data.objects.get(parent_empty_name)
+                if not parent_empty or parent_empty.type != 'EMPTY':
+                    parent_empty = bpy.data.objects.new(parent_empty_name, None)
+                    bpy.context.collection.objects.link(parent_empty)
+
+                for part_name_json, transform_data in entity_parts.items():
+                    if part_name_json.lower() == "eyes":
+                        eye_position = transform_data.get("eyePosition")
+                        if eye_position:
+                            eye_empty_name = f"{parent_empty_name}_eyePosition"
+                            eye_empty = bpy.data.objects.get(eye_empty_name)
+                            if not eye_empty or eye_empty.type != 'EMPTY':
+                                eye_empty = bpy.data.objects.new(eye_empty_name, None)
+                                bpy.context.collection.objects.link(eye_empty)
+                                
+
+                            ex, ey, ez = eye_position
+                            
+                            blender_x = ex * block_size_multiplier
+
+                            blender_y = -ez * block_size_multiplier
+
+                            blender_z = ey * block_size_multiplier
+
+                
+
+                            eye_empty.location = (-blender_x, -blender_y, blender_z)
+                            eye_empty.keyframe_insert(data_path="location", frame=frame_number)
+                            
+                            eye_angle_data = transform_data.get("eyeangle")
+                            if eye_angle_data and len(eye_angle_data) == 3:
+                                blender_pitch = math.radians(-eye_angle_data[0]) # Source X -> Blender -X
+                                blender_yaw = math.radians(-eye_angle_data[1])   # Source Y -> Blender -Z
+                                blender_roll = math.radians(eye_angle_data[2])  # Source Z -> Blender +Y
+                                eye_empty.rotation_mode = 'XYZ' # Start with XYZ, adjust if needed
+
+                                # Apply the converted rotations
+                                eye_empty.rotation_euler = (blender_pitch, blender_roll, blender_yaw)
+                                eye_empty.keyframe_insert(data_path="rotation_euler", frame=frame_number)
+
+
+                    elif part_name_json.lower() == "blockposition":
+                        block_position = transform_data.get("blockPosition")
+                        if block_position:
+                            bp_x, bp_y, bp_z = block_position
+                            
+                            blender_x = bp_x * block_size_multiplier
+
+                            blender_y = -bp_z * block_size_multiplier
+
+                            blender_z = bp_y * block_size_multiplier
+                            parent_empty.location = (-blender_x, -blender_y, blender_z)
+                            parent_empty.keyframe_insert(data_path="location", frame=frame_number)
+                            
+                    
+
+                    else:  # Handle other parts with rotation and position
+                        rotation = transform_data.get("rotation")
+                        position = transform_data.get("position")
+
+                        empty_object_name = f"{parent_empty_name}_{part_name_json}"
+                        empty_object = bpy.data.objects.get(empty_object_name)
+                        if not empty_object or empty_object.type != 'EMPTY':
+                            empty_object = bpy.data.objects.new(empty_object_name, None)
+                            bpy.context.collection.objects.link(empty_object)
+                            empty_object.parent = parent_empty
+
+                        if position:
+                            px, py, pz = position
+                            empty_object.location = (px * block_size_multiplier, py * block_size_multiplier, pz * block_size_multiplier)
+                            empty_object.keyframe_insert(data_path="location", frame=frame_number)
+
+                        if rotation:
+                            rotation_rad = [r for r in rotation]
+                            
+                            
+                            
+                            # Convert degrees to radians
+                            yaw_rad = rotation_rad[2]
+                            pitch_rad = rotation_rad[0]
+                            roll_rad = rotation_rad[1]
+
+                            # Blender uses Euler ZYX by default when assigning a tuple
+                            # We need to set the rotation_mode explicitly if we want a different order
+                            empty_object.rotation_mode = 'XYZ' # Set a default mode
+
+                            blender_pitch = -pitch_rad # Negate pitch
+                            blender_yaw = -yaw_rad   # Keep yaw negation
+                            blender_roll = roll_rad
+
+                            empty_object.rotation_euler = (blender_pitch, blender_yaw, -blender_roll)
+                            empty_object.keyframe_insert(data_path="rotation_euler", frame=frame_number)
+
+                max_frame = max(max_frame, frame_number)
+
+        bpy.context.scene.frame_end = max(bpy.context.scene.frame_end, max_frame)
+
 
 
 def menu_func_import(self, context):
-    self.layout.operator(FlashBlackImport.bl_idname, text="FlashBlack Camera (.json)")
+    self.layout.operator(FlashBlackImport.bl_idname, text="FlashBlack Camera/Tracking (.json)")
 
 
 def register():
