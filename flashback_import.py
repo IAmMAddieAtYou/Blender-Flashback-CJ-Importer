@@ -1,7 +1,7 @@
 bl_info = {
     "name": "FlashBlack CJ/ET Blender Import",
     "author": "IAmMaddieFilms",
-    "version": (1, 8, 1),  # Increment version
+    "version": (1, 8, 2),
     "blender": (3, 0, 0),
     "location": "File > Import",
     "description": "Imports camera animation and tracking data from FlashBlack CJ/ET JSON files, sets end frame, converts Minecraft coordinates and rotations.",
@@ -14,6 +14,7 @@ import os
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty, FloatProperty, EnumProperty
 import math
+from mathutils import Quaternion
 
 
 class FlashBlackImport(bpy.types.Operator, ImportHelper):
@@ -47,22 +48,24 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
         default=1.0,
         min=0.001,  # Avoid zero or very small values that might cause issues
     )
+    
+    render_height: FloatProperty(
+        name="Render Height",
+        description="Height of Video",
+        default=1600,
+        min=1,
+        max=50000# Avoid zero or very small values that might cause issues
+    )
 
     render_width: FloatProperty(
         name="Render Width",
         description="Width of Video",
-        default=1920,
+        default=3840,
         min=1,
-        max=5000      # Avoid zero or very small values that might cause issues
+        max=50000      # Avoid zero or very small values that might cause issues
     )
 
-    render_height: FloatProperty(
-        name="Render Height",
-        description="Height of Video",
-        default=1080,
-        min=1,
-        max=5000# Avoid zero or very small values that might cause issues
-    )
+    
 
     def execute(self, context):
         cj_data = None
@@ -120,8 +123,8 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
         layout.prop(self, "block_size_multiplier")
 
         if self.import_type == 'CJ' or self.import_type == 'BOTH':
-            layout.prop(self, "render_height")
             layout.prop(self, "render_width")
+            layout.prop(self, "render_height")
         
     def calculate_horizontal_fov(ignore, vertical_fov_degrees,aspect_ratio):
         
@@ -184,15 +187,54 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
 
                 camera_object.keyframe_insert(data_path="location", frame=frame)
 
-            # Rotation
             if (
+                "w" in keyframe_data
+                and "x" in keyframe_data
+                and "y" in keyframe_data
+                and "z" in keyframe_data
+            ):
+                # --- Import as Quaternion ---
+
+                # Set rotation mode to QUATERNION
+                camera_object.rotation_mode = 'QUATERNION'
+
+                # 1. Define the correction rotation: +90 degrees (pi/2 radians) on the X-axis
+                # math.cos(angle/2), math.sin(angle/2)
+                # 90 deg / 2 = 45 deg = pi/4 rad
+                angle = math.pi / 2.0  # 90 degrees
+                correction_quat = Quaternion((math.cos(angle / 2.0), math.sin(angle / 2.0), 0, 0))
+                # This is approx (0.7071, 0.7071, 0, 0)
+
+                # 2. Get the quaternion values from your data
+                w = keyframe_data["w"]
+                x = keyframe_data["x"]
+                y = keyframe_data["y"]
+                z = keyframe_data["z"]
+    
+                # 3. Create the Minecraft quaternion object
+                # Blender's Quaternion is (w, x, y, z)
+                minecraft_quat = Quaternion((w, x, y, z))
+
+                # 4. Multiply the quaternions to get the final, corrected rotation
+                # The @ operator is used for matrix/quaternion multiplication in Blender
+                # This applies the Minecraft rotation, then rotates the whole system.
+                blender_quat = correction_quat @ minecraft_quat
+
+                # 5. Assign the corrected quaternion
+                camera_object.rotation_quaternion = blender_quat
+
+                # 6. Insert the keyframe
+                camera_object.keyframe_insert(data_path="rotation_quaternion", frame=frame)
+            
+            elif (
                 "yaw" in keyframe_data
                 and "pitch" in keyframe_data
                 and "roll" in keyframe_data
             ):
+                # --- Import as Euler (Your Original Code) ---
                 yaw_degrees = keyframe_data["yaw"]
                 pitch_degrees = keyframe_data["pitch"]
-                roll_degrees = keyframe_data.get("roll", 0.0)  # Assuming roll is 0 if not present
+                roll_degrees = keyframe_data["roll"]  # Assuming roll is 0 if not present
 
                 # Convert degrees to radians
                 yaw_rad = math.radians(yaw_degrees)
@@ -204,7 +246,7 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
                 camera_object.rotation_mode = 'XYZ' # Set a default mode
 
                 blender_pitch = math.radians(-pitch_degrees) # Negate pitch
-                blender_yaw = math.radians(-yaw_degrees)   # Keep yaw negation
+                blender_yaw = math.radians(-yaw_degrees)    # Keep yaw negation
                 blender_roll = math.radians(roll_degrees)
 
                 camera_object.rotation_euler = (blender_pitch, blender_yaw, blender_roll)
@@ -220,13 +262,13 @@ class FlashBlackImport(bpy.types.Operator, ImportHelper):
                 camera_object.data.lens_unit = "MILLIMETERS"
                 camera_object.data.sensor_fit = "AUTO"
                 # Avoid division by zero if FOV is very close to 0
-                if fov_degrees > 0 and fov_degrees < 180:
+                if fov_degrees > 0 and fov_degrees < 360:
                 
                     aspect_ratio = (render_width / render_height)
                     print(fov_degrees)
                     print(aspect_ratio)
                     sensor_width_mm = camera_object.data.sensor_width
-                    blender_horizontal_fov = self.calculate_horizontal_fov(int(fov_degrees), float(aspect_ratio))
+                    blender_horizontal_fov = self.calculate_horizontal_fov(float(fov_degrees), float(aspect_ratio))
                     focal_length = sensor_width_mm / (2 * math.tan(math.radians(blender_horizontal_fov) / 2))
 
                     # Get or create the F-curve for data.lens
